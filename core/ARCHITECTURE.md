@@ -394,112 +394,110 @@ impl GatewayManager {
 - **REST API**: Comprehensive API for automation and CLI tools
 - **Multi-tenant**: Organization-based isolation and resource management
 
-#### 3. **client** (Cross-Platform Flutter+Rust App)
-**Purpose:** Single cross-platform app for VPN connection, port forwarding, and service exposure
-**Technology:** Flutter UI + Rust core via flutter_rust_bridge
+#### 3. **tunnel** (Client-Side WireGuard Operations)
+**Purpose:** Client-side tunnel management and WireGuard interface handling  
+**Technology:** Pure Rust + WireGuard integration + Network interface management
 
 ```rust
-// Unified Client Architecture
-pub struct RustronautClient {
-    // VPN CONNECTION
-    vpn_manager: VpnManager,                // WireGuard client connection
-    network_interface: NetworkInterface,    // System network integration
+// Rustronaut Tunnel Architecture (Client-Side Operations)
+pub struct TunnelManager {
+    // WIREGUARD CLIENT OPERATIONS
+    wireguard_client: WireGuardClient,       // Client-side WireGuard interface
+    interface_manager: NetworkInterface,     // System network integration
+    peer_manager: PeerManager,               // Gateway peer configuration
     
-    // PORT FORWARDING & TRANSLATION
-    port_translator: PortTranslator,        // Local port forwarding
-    service_discoverer: ServiceDiscoverer,  // Auto-discover local services
+    // TUNNEL ESTABLISHMENT
+    tunnel_establisher: TunnelEstablisher,   // Establish secure tunnels
+    connection_monitor: ConnectionMonitor,   // Monitor tunnel health
+    reconnect_handler: ReconnectHandler,     // Handle connection drops
     
-    // SERVICE EXPOSURE (REVERSE TUNNELS)
-    host_exposer: HostExposer,              // Expose local services publicly
-    tunnel_manager: TunnelManager,          // Manage outbound tunnels
+    // CLIENT CONFIGURATION
+    config_manager: ClientConfigManager,     // Local tunnel configuration
+    key_manager: KeyManager,                 // WireGuard key management
+    dns_manager: DnsManager,                 // DNS configuration for tunnel
     
-    // CONSOLE INTEGRATION
-    console_client: ConsoleClient,          // Communication with console
-    config_manager: ConfigManager,          // Local configuration management
+    // GATEWAY COMMUNICATION
+    gateway_client: GatewayClient,           // Communicate with gateway APIs
+    registration_handler: RegistrationHandler, // Register with gateways
 }
 
-// VPN Manager - WireGuard Client
-impl VpnManager {
-    pub async fn connect_to_gateway(&self, gateway_config: GatewayConfig) -> Result<()> {
-        // 1. Generate WireGuard keys
+// WireGuard Client (Tunnel Component Responsibility)
+impl WireGuardClient {
+    pub async fn create_interface(&self, config: &TunnelConfig) -> Result<Interface> {
+        // 1. Generate client keypair
         let (private_key, public_key) = self.generate_keypair()?;
         
-        // 2. Register with console/gateway
-        let peer_config = self.register_peer(&public_key, &gateway_config).await?;
+        // 2. Register with gateway
+        let peer_config = self.register_with_gateway(
+            &config.gateway_endpoint, 
+            &public_key
+        ).await?;
         
-        // 3. Configure WireGuard interface
-        self.configure_wireguard_interface(&peer_config).await?;
+        // 3. Create WireGuard interface
+        let interface = Interface::new(&private_key, &peer_config)?;
         
-        // 4. Establish tunnel
-        self.establish_tunnel(&gateway_config.endpoint).await
+        // 4. Configure routing
+        self.configure_routes(&interface, &config.routes).await?;
+        
+        Ok(interface)
+    }
+    
+    pub async fn establish_tunnel(&self, gateway: &Gateway) -> Result<Tunnel> {
+        // Establish secure tunnel to specific gateway
+        let tunnel = Tunnel::connect(
+            &self.local_endpoint,
+            &gateway.public_endpoint,
+            &gateway.public_key
+        ).await?;
+        
+        // Monitor tunnel health
+        self.connection_monitor.start_monitoring(&tunnel).await?;
+        
+        Ok(tunnel)
     }
 }
 
-// Host Exposer - Make Local Services Public
-impl HostExposer {
-    pub async fn expose_service(&self, local_addr: &str, protocol: &str) -> Result<PublicEndpoint> {
-        // 1. Create reverse tunnel to gateway
-        let tunnel = self.create_reverse_tunnel(local_addr, protocol).await?;
+// Tunnel-Specific Configuration
+#[derive(Debug, Clone)]
+pub struct TunnelConfig {
+    pub gateway_endpoint: SocketAddr,
+    pub allowed_ips: Vec<IpNet>,
+    pub dns_servers: Vec<IpAddr>,
+    pub routes: Vec<Route>,
+    pub auto_reconnect: bool,
+    pub keepalive_interval: Duration,
+}
+
+// Gateway Registration (Tunnel → Gateway Communication)
+impl RegistrationHandler {
+    pub async fn register_client(&self, gateway_api: &str, public_key: &str) -> Result<PeerConfig> {
+        // Register this tunnel client with the gateway
+        let registration_request = ClientRegistrationRequest {
+            public_key: public_key.to_string(),
+            client_info: ClientInfo {
+                platform: env::consts::OS.to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+        };
         
-        // 2. Register service with console
-        let public_endpoint = self.console_client
-            .register_public_service(&tunnel.id, protocol)
+        let response = self.http_client
+            .post(&format!("{}/api/v1/clients/register", gateway_api))
+            .json(&registration_request)
+            .send()
             .await?;
-        
-        // 3. Start forwarding traffic
-        self.start_traffic_forwarding(&tunnel, local_addr).await?;
-        
-        Ok(public_endpoint)
+            
+        Ok(response.json::<PeerConfig>().await?)
     }
 }
 ```
 
-**Flutter UI Components:**
-```dart
-// Main App Structure
-class RustronautApp extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      home: TabController(
-        length: 4,
-        child: Scaffold(
-          body: TabBarView(
-            children: [
-              VpnConnectionScreen(),      // Connect to gateways
-              PortForwardingScreen(),     // Local port management  
-              ServiceExposureScreen(),    // Expose local services
-              SettingsScreen(),           // Configuration
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// VPN Connection Management
-class VpnConnectionScreen extends StatefulWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        GatewaySelector(),              // Choose gateway to connect
-        ConnectionStatus(),             // Show connection state
-        QuickConnectButton(),           // One-click connection
-        NetworkStatistics(),            // Show traffic/latency stats
-      ],
-    );
-  }
-}
-```
-
-**Key Features - CROSS-PLATFORM SIMPLICITY:**
-- **Single Codebase**: Flutter+Rust for Windows, macOS, Linux, iOS, Android
-- **WireGuard Integration**: Native WireGuard client for secure tunnels
-- **Service Discovery**: Auto-detect local services for easy exposure
-- **Simple UI**: Clean, intuitive interface for all features
-- **Offline Capable**: Works without internet for local port forwarding
+**Key Features - CLIENT-SIDE TUNNEL OPERATIONS:**
+- **WireGuard Client**: Native WireGuard interface creation and management
+- **Gateway Registration**: Automatic registration with gateway services
+- **Connection Monitoring**: Health checks and automatic reconnection
+- **Cross-Platform**: Works on Windows, macOS, Linux (client systems)
+- **Route Management**: Intelligent routing through tunnel interfaces
+- **DNS Integration**: Automatic DNS configuration for tunnel access
 
 #### 4. **docs** (Documentation Platform)
 **Purpose:** Comprehensive documentation and API references
